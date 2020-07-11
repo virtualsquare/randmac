@@ -32,7 +32,7 @@ randmac(1) -- generate random MAC addresses
 
 ## DESCRIPTION
 
-`randmac` print a random MAC address. This utility has been designed to
+`randmac` prints a random MAC address. This utility has been designed to
 give random MAC addresses to interfaces of virtual machines.
 
 ## OPTIONS
