@@ -66,7 +66,7 @@ static void usage(char *progname) {
 			"   --vendor <vendor>  set oui from vendor\n"
 			"   -q, --qemu         set qemu oui 52:54:00\n"
 			"   -x, --xen          set xen oui 00:16:3e\n"
-			"   -h, --delp         Print Help (this message) and exit\n",
+			"   -h, --help         Print Help (this message) and exit\n",
 			progname);
 	exit(1);
 }
