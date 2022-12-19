@@ -17,16 +17,18 @@
  *
  */
 
+#include <fcntl.h>
+#include <getopt.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include <time.h>
-#include <libgen.h>
-#include <getopt.h>
+#include <sys/stat.h>
 #include <strcase.h>
 
 #define EUICSV "/var/lib/ieee-data/oui.csv"
+#define RANDOM_DEVICE "/dev/urandom"
 
 static char *short_options = "lgumUeqxo:v:h";
 static struct option long_options[] = {
@@ -50,9 +52,12 @@ static char *printfmt[] = {
 	"%02X:%02X:%02X:FF:FE:%02X:%02X:%02X\n",
 };
 
-static void usage(char *progname) {
-	fprintf(stderr,
-			"Usage %s [options]\n\n"
+static void usage(char *progname, int exitcode) {
+	if (exitcode != 0)
+		fprintf(stderr, "\n");
+	fprintf(exitcode ? stderr : stdout,
+			"Usage\n"
+			"   %s [options]\n\n"
 			"Options:\n"
 			"   -l, --local        local administered\n"
 			"   -g, --global       global unique\n"
@@ -66,25 +71,38 @@ static void usage(char *progname) {
 			"   --vendor <vendor>  set oui from vendor\n"
 			"   -q, --qemu         set qemu oui 52:54:00\n"
 			"   -x, --xen          set xen oui 00:16:3e\n"
-			"   -h, --help         Print Help (this message) and exit\n",
+			"   -h, --help         print help (this message) and exit\n\n"
+			"For more details see randmac(1).\n",
 			progname);
-	exit(1);
+	exit(exitcode);
+}
+
+static void panic(const char *format, ...) {
+	va_list args;
+	va_start(args, format);
+	vfprintf(stderr, format, args);
+	va_end(args);
+	exit(2);
 }
 
 static unsigned int read_oui(char *s) {
 	if (strchr(s, ':')) {
 		unsigned int byte[3];
-		if (sscanf(s, "%x:%x:%x", byte, byte+1, byte+2) != 3) {
-			fprintf(stderr, "Invalid oui specification\n");
-			exit(2);
-		}
+		if (sscanf(s, "%x:%x:%x", byte, byte+1, byte+2) != 3)
+			panic("Invalid OUI specification (expected OUI in the form xx:xx:xx)\n");
 		return ((byte[0] & 0xff) << 16) + ((byte[1] & 0xff) << 8) + (byte[2] & 0xff);
 	} else {
 		switch (strcase(s)) {
 			case STRCASE(q,e,m,u): return 0x525400;
 			case STRCASE(x,e,n):   return 0x00163e;
 			default:
-														 return strtol(s, NULL, 16);
+				if (strlen(s) < 1 || strlen(s) > 6)
+					panic("Invalid OUI specification (expected between 1 and 6 hex digits, got %zu)\n", strlen(s));
+				char *endptr;
+				unsigned int oui = strtoul(s, &endptr, 16);
+				if (*endptr != '\0')
+					panic("Invalid OUI specification (aborted at %c due to invalid character)\n", *endptr);
+				return oui;
 		}
 	}
 }
@@ -92,11 +110,27 @@ static unsigned int read_oui(char *s) {
 static unsigned int vendor_oui(char *s) {
 	FILE *stream = fopen(EUICSV, "r");
 	char *line = NULL;
-	size_t len = 0;
-	if (stream == NULL) {
-		fprintf(stderr, "eui csv file not found\n");
-		exit(2);
+	size_t len, count, index;
+	len = count = index = 0;
+	if (stream == NULL)
+		panic("Failed to open %s. File possibly missing, try installing the ieee-data package.\n", EUICSV);
+	while (getline(&line, &len, stream) >= 0) {
+		if (strncmp(line, "MA-L,", 5) == 0) {
+			char *tail = line + strlen("MA-L,000000");
+			if (*tail == ',') {
+				tail++;
+				if (*tail == '"') tail++;
+				if (strncmp(s, tail, strlen(s)) == 0) {
+					count++;
+				}
+			}
+		}
 	}
+	if (count == 0)
+		goto notfound;
+
+	rewind(stream);
+	index = rand() % count;
 	while (getline(&line, &len, stream) >= 0) {
 		if (strncmp(line, "MA-L,", 5) == 0) {
 			char *tail;
@@ -105,15 +139,23 @@ static unsigned int vendor_oui(char *s) {
 				tail++;
 				if (*tail == '"') tail++;
 				if (strncmp(s, tail, strlen(s)) == 0) {
-					free(line);
-					fclose(stream);
-					return eui;
+					if (index == 0) {
+						free(line);
+						fclose(stream);
+						return eui;
+					}
+					index--;
 				}
 			}
 		}
 	}
-	fprintf(stderr, "Invalid vendor oui\n");
-	exit(2);
+
+	notfound:
+		if (line != NULL)
+			free(line);
+		fclose(stream);
+		panic("Invalid vendor OUI\n");
+		return 0; // make compiler happy
 }
 
 int main(int argc, char *argv[]) {
@@ -146,13 +188,26 @@ int main(int argc, char *argv[]) {
 			case 'x': oui_string = "xen"; break;
 			case 'o': oui_string = optarg; break;
 			case 'v': vendor = optarg; break;
-			default: usage(progname);
+			case 'h': usage(progname, 0); break;
+			default: usage(progname, 1);
 		}
 	}
-	if (optind < argc)
-		usage(progname);
+	if (optind < argc) {
+		fprintf(stderr, "%s: extra operand -- '%s'\n", progname, argv[optind]);
+		usage(progname, 1);
+	}
 
-	srand(time(NULL) + getpid());
+	unsigned int seed;
+	int urandom = open(RANDOM_DEVICE, O_RDONLY);
+	if (urandom < 0) {
+		panic("%s: failed to open %s\n", progname, RANDOM_DEVICE);
+	}
+	if (read(urandom, &seed, sizeof(seed)) != sizeof(seed)) {
+		panic("%s: failed to read from %s\n", progname, RANDOM_DEVICE);
+	}
+	close(urandom);
+	srand(seed);
+
 	if (vendor == NULL) {
 		if (oui_string == NULL)
 			oui = (rand() & 0xfcffff) | 0x020000;
