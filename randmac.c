@@ -172,7 +172,7 @@ int main(int argc, char *argv[]) {
 	unsigned int uppercase = 0;
 	unsigned int eui64 = 0;
 	while (1) {
-		char c;
+		int c;
 		int option_index = 0;
 		c = getopt_long(argc, argv, short_options,
 				long_options,  &option_index);
